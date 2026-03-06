@@ -19,6 +19,7 @@
       position: relative;
       width: 480px;
       height: 640px;
+      transform-origin: center center;
     }
     canvas {
       display: block;
@@ -108,6 +109,15 @@
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
 
+    // === Module-level clouds ===
+    const clouds = [
+      { x: 50,  y: 80,  w: 80,  h: 30 },
+      { x: 200, y: 150, w: 100, h: 35 },
+      { x: 350, y: 60,  w: 70,  h: 25 },
+      { x: 120, y: 250, w: 90,  h: 28 },
+      { x: 380, y: 200, w: 75,  h: 22 },
+    ];
+
     // === Game State ===
     let state = GameState.START;
     let pipes = [];
@@ -123,6 +133,15 @@
     let startTextDirection = -1;
     let birdName = 'Bird';
     let birdColor = '#3498db';
+
+    // === New visual state ===
+    let cloudOffset = 0;
+    let groundOffset = 0;
+    let birdAngle = 0;
+    let wingPhase = 0;
+    let scorePopups = [];
+    let flashOpacity = 0;
+    let gameOverOverlayAlpha = 0;
 
     // === Name / Color Input ===
     const nameInputContainer = document.getElementById('name-input-container');
@@ -146,6 +165,8 @@
     function triggerGameOver() {
       state = GameState.GAMEOVER;
       gameOverTime = performance.now();
+      flashOpacity = 0.6;
+      gameOverOverlayAlpha = 0;
       isNewHighScore = saveHighScore(score);
       highScore = getHighScore();
       setTimeout(() => {
@@ -161,15 +182,50 @@
     // === Keyboard Controls ===
     const BIRD_SPEED = 0.35; // px/ms (~21px/frame at 60fps)
     const keys = { up: false, down: false };
+
+    function startGame() {
+      birdName = birdNameInput.value.trim() || 'Bird';
+      birdColor = colorPickerInput.value;
+      nameInputContainer.style.display = 'none';
+      state = GameState.PLAYING;
+      lastPipeSpawnTime = 0;
+    }
+
     document.addEventListener('keydown', (e) => {
-      if (e.code === 'ArrowUp' || e.code === 'KeyW') { keys.up = true; if (state === GameState.START) { birdName = birdNameInput.value.trim() || 'Bird'; birdColor = colorPickerInput.value; nameInputContainer.style.display = 'none'; state = GameState.PLAYING; lastPipeSpawnTime = 0; } }
-      if (e.code === 'ArrowDown' || e.code === 'KeyS') { keys.down = true; if (state === GameState.START) { birdName = birdNameInput.value.trim() || 'Bird'; birdColor = colorPickerInput.value; nameInputContainer.style.display = 'none'; state = GameState.PLAYING; lastPipeSpawnTime = 0; } }
+      if (e.code === 'ArrowUp' || e.code === 'KeyW') { keys.up = true; if (state === GameState.START) startGame(); }
+      if (e.code === 'ArrowDown' || e.code === 'KeyS') { keys.down = true; if (state === GameState.START) startGame(); }
       if (e.code === 'Space') handleRestart();
     });
     document.addEventListener('keyup', (e) => {
       if (e.code === 'ArrowUp' || e.code === 'KeyW') keys.up = false;
       if (e.code === 'ArrowDown' || e.code === 'KeyS') keys.down = false;
     });
+
+    // === Touch Controls ===
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      if (state === GameState.START) { startGame(); return; }
+      if (state === GameState.GAMEOVER) { handleRestart(); return; }
+      const touch = e.touches[0];
+      const rect = canvas.getBoundingClientRect();
+      const touchY = touch.clientY - rect.top;
+      if (touchY < rect.height / 2) { keys.up = true; } else { keys.down = true; }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      keys.up = false;
+      keys.down = false;
+    }, { passive: false });
+
+    // === Responsive Scaling ===
+    function scaleCanvas() {
+      const scale = Math.min(window.innerWidth / 480, window.innerHeight / 640, 1);
+      const container = document.getElementById('game-container');
+      container.style.transform = `scale(${scale})`;
+    }
+    window.addEventListener('resize', scaleCanvas);
+    scaleCanvas();
 
     // === Pure Functions ===
 
@@ -233,6 +289,10 @@
       birdY = CANVAS_H / 2 - BIRD_H / 2;
       lastPipeSpawnTime = 0;
       isNewHighScore = false;
+      scorePopups = [];
+      birdAngle = 0;
+      wingPhase = 0;
+      groundOffset = 0;
       state = GameState.PLAYING;
     }
 
@@ -252,6 +312,10 @@
     function update(deltaTime) {
       if (deltaTime > 100) deltaTime = 100; // cap large deltas
 
+      // Clouds scroll in all states
+      const cloudSpeed = (state === GameState.PLAYING) ? currentSpeed : PIPE_SPEED_INITIAL;
+      cloudOffset += cloudSpeed * deltaTime * 0.2;
+
       if (state === GameState.START) {
         // Animate start text pulsing
         startTextOpacity += startTextDirection * 0.015;
@@ -260,13 +324,35 @@
         return;
       }
 
-      if (state !== GameState.PLAYING) return;
+      if (state === GameState.GAMEOVER) {
+        gameOverOverlayAlpha = Math.min(0.6, gameOverOverlayAlpha + 0.015);
+        return;
+      }
+
+      // PLAYING state below
+
+      // Scrolling ground
+      groundOffset = (groundOffset + currentSpeed * deltaTime) % 40;
+
+      // Bird tilt (smooth interpolation toward target angle)
+      const targetAngle = keys.up ? -20 : (keys.down ? 20 : 0);
+      birdAngle += (targetAngle - birdAngle) * 0.15;
+
+      // Wing phase
+      wingPhase += deltaTime * 0.01;
+
+      // Update score popups
+      scorePopups = scorePopups.filter(p => p.opacity > 0);
+      for (const p of scorePopups) {
+        p.y += p.dy;
+        p.opacity -= 0.02;
+      }
 
       // Update bird position from keyboard
       if (keys.up) birdY -= BIRD_SPEED * deltaTime;
       if (keys.down) birdY += BIRD_SPEED * deltaTime;
 
-      // Boundary collision (no clamping)
+      // Boundary collision
       if (birdY <= 0 || birdY + BIRD_H >= CANVAS_H) {
         triggerGameOver(); return;
       }
@@ -291,6 +377,7 @@
         }
         if (checkPipePass(BIRD_X, pipe)) {
           score++;
+          scorePopups.push({ x: BIRD_X + BIRD_W + 10, y: birdY, opacity: 1, dy: -0.5 });
         }
       }
     }
@@ -304,7 +391,7 @@
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-      // Clouds (decorative)
+      // Clouds
       drawClouds();
 
       // Pipes
@@ -312,11 +399,15 @@
         drawPipe(pipe);
       }
 
-      // Ground strip
-      ctx.fillStyle = '#8B6914';
-      ctx.fillRect(0, CANVAS_H - 20, CANVAS_W, 20);
-      ctx.fillStyle = '#5a8a2f';
-      ctx.fillRect(0, CANVAS_H - 20, CANVAS_W, 4);
+      // Ground
+      drawGround();
+
+      // Game-over red flash (drawn before bird so bird is visible on top)
+      if (state === GameState.GAMEOVER && flashOpacity > 0) {
+        ctx.fillStyle = `rgba(220, 30, 30, ${flashOpacity})`;
+        ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+        flashOpacity = Math.max(0, flashOpacity - 0.04);
+      }
 
       // Bird + name tag
       if (state === GameState.PLAYING || state === GameState.GAMEOVER) {
@@ -334,9 +425,11 @@
         ctx.restore();
       }
 
-      // Score during play
+      // Score + level during play
       if (state === GameState.PLAYING) {
         drawScore(score);
+        drawLevel(score);
+        drawScorePopups();
       }
 
       // Overlays
@@ -349,24 +442,35 @@
 
     function drawClouds() {
       ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-      // Static cloud positions
-      const clouds = [
-        { x: 50, y: 80, w: 80, h: 30 },
-        { x: 200, y: 150, w: 100, h: 35 },
-        { x: 350, y: 60, w: 70, h: 25 },
-        { x: 120, y: 250, w: 90, h: 28 },
-        { x: 380, y: 200, w: 75, h: 22 },
-      ];
+      const wrapWidth = CANVAS_W + 200;
       for (const c of clouds) {
+        // Wrap cloud around screen as cloudOffset increases
+        let drawX = ((c.x - cloudOffset % wrapWidth) % wrapWidth + wrapWidth) % wrapWidth;
+        if (drawX > CANVAS_W + c.w) drawX -= wrapWidth;
+
         ctx.beginPath();
-        ctx.ellipse(c.x, c.y, c.w / 2, c.h / 2, 0, 0, Math.PI * 2);
+        ctx.ellipse(drawX, c.y, c.w / 2, c.h / 2, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.ellipse(c.x - c.w * 0.25, c.y + 5, c.w * 0.3, c.h * 0.4, 0, 0, Math.PI * 2);
+        ctx.ellipse(drawX - c.w * 0.25, c.y + 5, c.w * 0.3, c.h * 0.4, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.ellipse(c.x + c.w * 0.25, c.y + 3, c.w * 0.35, c.h * 0.45, 0, 0, Math.PI * 2);
+        ctx.ellipse(drawX + c.w * 0.25, c.y + 3, c.w * 0.35, c.h * 0.45, 0, 0, Math.PI * 2);
         ctx.fill();
+      }
+    }
+
+    function drawGround() {
+      // Dirt base
+      ctx.fillStyle = '#8B6914';
+      ctx.fillRect(0, CANVAS_H - 20, CANVAS_W, 20);
+      // Grass strip
+      ctx.fillStyle = '#5a8a2f';
+      ctx.fillRect(0, CANVAS_H - 20, CANVAS_W, 4);
+      // Scrolling tick marks for motion illusion
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      for (let x = -40 + groundOffset; x < CANVAS_W; x += 40) {
+        ctx.fillRect(x, CANVAS_H - 16, 3, 12);
       }
     }
 
@@ -374,15 +478,26 @@
       const capHeight = 24;
       const capOverhang = 6;
 
+      // Gradient for depth
+      const grad = ctx.createLinearGradient(pipe.x, 0, pipe.x + pipe.width, 0);
+      grad.addColorStop(0, '#27ae60');
+      grad.addColorStop(0.5, '#2ecc71');
+      grad.addColorStop(1, '#58d68d');
+
+      const capGrad = ctx.createLinearGradient(pipe.x - capOverhang, 0, pipe.x + pipe.width + capOverhang, 0);
+      capGrad.addColorStop(0, '#27ae60');
+      capGrad.addColorStop(0.5, '#2ecc71');
+      capGrad.addColorStop(1, '#58d68d');
+
       // Top pipe body
-      ctx.fillStyle = '#2ecc71';
+      ctx.fillStyle = grad;
       ctx.fillRect(pipe.x, 0, pipe.width, pipe.topHeight);
       ctx.strokeStyle = '#27ae60';
       ctx.lineWidth = 3;
       ctx.strokeRect(pipe.x, 0, pipe.width, pipe.topHeight);
 
       // Top pipe cap
-      ctx.fillStyle = '#2ecc71';
+      ctx.fillStyle = capGrad;
       ctx.fillRect(pipe.x - capOverhang, pipe.topHeight - capHeight, pipe.width + capOverhang * 2, capHeight);
       ctx.strokeStyle = '#27ae60';
       ctx.strokeRect(pipe.x - capOverhang, pipe.topHeight - capHeight, pipe.width + capOverhang * 2, capHeight);
@@ -392,14 +507,14 @@
       ctx.fillRect(pipe.x + 6, 0, 8, pipe.topHeight - capHeight);
 
       // Bottom pipe body
-      ctx.fillStyle = '#2ecc71';
+      ctx.fillStyle = grad;
       ctx.fillRect(pipe.x, pipe.bottomY, pipe.width, CANVAS_H - pipe.bottomY);
       ctx.strokeStyle = '#27ae60';
       ctx.lineWidth = 3;
       ctx.strokeRect(pipe.x, pipe.bottomY, pipe.width, CANVAS_H - pipe.bottomY);
 
       // Bottom pipe cap
-      ctx.fillStyle = '#2ecc71';
+      ctx.fillStyle = capGrad;
       ctx.fillRect(pipe.x - capOverhang, pipe.bottomY, pipe.width + capOverhang * 2, capHeight);
       ctx.strokeStyle = '#27ae60';
       ctx.strokeRect(pipe.x - capOverhang, pipe.bottomY, pipe.width + capOverhang * 2, capHeight);
@@ -412,6 +527,11 @@
     function drawBird(x, y) {
       ctx.save();
 
+      // Apply tilt rotation around bird center
+      ctx.translate(x + BIRD_W / 2, y + BIRD_H / 2);
+      ctx.rotate(birdAngle * Math.PI / 180);
+      ctx.translate(-(x + BIRD_W / 2), -(y + BIRD_H / 2));
+
       // Body (user-chosen color)
       ctx.fillStyle = birdColor;
       ctx.beginPath();
@@ -421,10 +541,11 @@
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Wing
+      // Wing with flap animation
+      const wingOffsetY = Math.sin(wingPhase) * 5;
       ctx.fillStyle = colorLighten(birdColor);
       ctx.beginPath();
-      ctx.ellipse(x + BIRD_W * 0.35, y + BIRD_H * 0.55, 12, 7, -0.3, 0, Math.PI * 2);
+      ctx.ellipse(x + BIRD_W * 0.35, y + BIRD_H * 0.55 + wingOffsetY, 12, 7, -0.3, 0, Math.PI * 2);
       ctx.fill();
 
       // Eye (white circle with black pupil)
@@ -451,16 +572,54 @@
 
     function drawScore(s) {
       ctx.save();
+      // Semi-transparent pill background
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+      ctx.beginPath();
+      ctx.roundRect(CANVAS_W / 2 - 55, 18, 110, 58, 29);
+      ctx.fill();
+
       ctx.font = 'bold 48px "Segoe UI", Arial, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       ctx.strokeStyle = '#000';
       ctx.lineWidth = 5;
       ctx.lineJoin = 'round';
-      ctx.strokeText(s.toString(), CANVAS_W / 2, 30);
+      ctx.strokeText(s.toString(), CANVAS_W / 2, 26);
       ctx.fillStyle = '#fff';
-      ctx.fillText(s.toString(), CANVAS_W / 2, 30);
+      ctx.fillText(s.toString(), CANVAS_W / 2, 26);
       ctx.restore();
+    }
+
+    function drawLevel(s) {
+      const level = Math.floor(s / 10) + 1;
+      ctx.save();
+      ctx.font = 'bold 16px "Segoe UI", Arial, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'top';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(`Lv ${level}`, CANVAS_W - 10, 12);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(`Lv ${level}`, CANVAS_W - 10, 12);
+      ctx.restore();
+    }
+
+    function drawScorePopups() {
+      for (const p of scorePopups) {
+        ctx.save();
+        ctx.globalAlpha = p.opacity;
+        ctx.font = 'bold 20px "Segoe UI", Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        ctx.lineJoin = 'round';
+        ctx.strokeText('+1', p.x, p.y);
+        ctx.fillStyle = '#f1c40f';
+        ctx.fillText('+1', p.x, p.y);
+        ctx.restore();
+      }
     }
 
     function drawStartScreen() {
@@ -481,6 +640,16 @@
       ctx.strokeText('Flappy Bird', CANVAS_W / 2, CANVAS_H * 0.3);
       ctx.fillText('Flappy Bird', CANVAS_W / 2, CANVAS_H * 0.3);
 
+      // High score below title
+      if (highScore > 0) {
+        ctx.font = 'bold 18px "Segoe UI", Arial, sans-serif';
+        ctx.fillStyle = '#f1c40f';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 3;
+        ctx.strokeText(`Best: ${highScore}`, CANVAS_W / 2, CANVAS_H * 0.38);
+        ctx.fillText(`Best: ${highScore}`, CANVAS_W / 2, CANVAS_H * 0.38);
+      }
+
       // Key icon (pulsing)
       ctx.font = '64px Arial';
       ctx.fillStyle = `rgba(255, 255, 255, ${startTextOpacity})`;
@@ -497,14 +666,14 @@
       // Subtitle
       ctx.font = '16px "Segoe UI", Arial, sans-serif';
       ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-      ctx.fillText('\u2191 \u2193  /  W S  controls the bird', CANVAS_W / 2, CANVAS_H * 0.7);
+      ctx.fillText('\u2191 \u2193  /  W S  or tap to control', CANVAS_W / 2, CANVAS_H * 0.7);
 
       ctx.restore();
     }
 
     function drawGameOverScreen() {
-      // Semi-transparent overlay
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      // Fade-in dark overlay
+      ctx.fillStyle = `rgba(0, 0, 0, ${gameOverOverlayAlpha})`;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       ctx.save();
