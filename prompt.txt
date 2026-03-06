@@ -1,0 +1,9 @@
+/deep-interview "
+Build web application for quick game flappy bird 
+production grade quality
+bird fly up and down by user hand moving up and down 
+test comprehensive
+help local deploy
+"
+
+

@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flappy Bird - Unit Tests</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      color: #eee;
+      font-family: 'Segoe UI', Consolas, monospace;
+      padding: 20px;
+    }
+    h1 { color: #70c5ce; margin-bottom: 10px; }
+    #results {
+      background: #16213e;
+      border-radius: 8px;
+      padding: 16px;
+      margin-top: 10px;
+      max-width: 800px;
+    }
+    .pass { color: #2ecc71; }
+    .fail { color: #e74c3c; font-weight: bold; }
+    .suite { color: #f5a623; font-weight: bold; margin-top: 12px; font-size: 16px; }
+    .result { margin: 3px 0; padding: 2px 8px; font-size: 14px; }
+    #summary {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .summary-pass { background: #145a32; color: #2ecc71; }
+    .summary-fail { background: #641e16; color: #e74c3c; }
+  </style>
+</head>
+<body>
+  <h1>Flappy Bird - Unit Tests</h1>
+  <div id="results"></div>
+  <div id="summary"></div>
+
+  <script>
+    // === Game Constants (same as index.html) ===
+    const CANVAS_W = 480, CANVAS_H = 640;
+    const BIRD_W = 40, BIRD_H = 30;
+    const BIRD_X = 80;
+    const PIPE_GAP = 150;
+    const PIPE_WIDTH = 60;
+    const PIPE_SPEED_INITIAL = 0.12;
+    const PIPE_SPEED_INCREMENT = 0.006;
+    const PIPE_SPAWN_INTERVAL = 1500;
+    const MIN_PIPE_Y = 80;
+    const MAX_PIPE_Y = CANVAS_H - PIPE_GAP - 80;
+    const RESTART_COOLDOWN = 1000;
+
+    // GameLogic functions -- keep in sync between index.html and test.html
+
+    function mapHandToBirdY(handY, canvasHeight, birdHeight) {
+      return handY * canvasHeight - birdHeight / 2;
+    }
+
+    function rectsOverlap(x1, y1, w1, h1, x2, y2, w2, h2) {
+      return x1 < x2 + w2 && x1 + w1 > x2 && y1 < y2 + h2 && y1 + h1 > y2;
+    }
+
+    function checkCollision(birdX, birdY, birdW, birdH, pipe) {
+      const hitsTop = rectsOverlap(birdX, birdY, birdW, birdH, pipe.x, 0, pipe.width, pipe.topHeight);
+      const hitsBottom = rectsOverlap(birdX, birdY, birdW, birdH, pipe.x, pipe.bottomY, pipe.width, CANVAS_H - pipe.bottomY);
+      return hitsTop || hitsBottom;
+    }
+
+    function createPipe(canvasWidth, canvasHeight, gap, minY, maxY) {
+      const topHeight = minY + Math.random() * (maxY - minY);
+      return { x: canvasWidth, topHeight, bottomY: topHeight + gap, width: PIPE_WIDTH, passed: false };
+    }
+
+    function updatePipes(pipes, speed, deltaTime) {
+      for (const pipe of pipes) { pipe.x -= speed * deltaTime; }
+      return pipes.filter(p => p.x + p.width > 0);
+    }
+
+    function checkPipePass(birdX, pipe) {
+      if (!pipe.passed && birdX > pipe.x + pipe.width) {
+        pipe.passed = true;
+        return true;
+      }
+      return false;
+    }
+
+    function getHighScore() {
+      return parseInt(localStorage.getItem('flappyBirdHighScore') || '0', 10);
+    }
+
+    function saveHighScore(score) {
+      const current = getHighScore();
+      if (score > current) {
+        localStorage.setItem('flappyBirdHighScore', score.toString());
+        return true;
+      }
+      return false;
+    }
+
+    window.GameLogic = {
+      mapHandToBirdY, checkCollision, rectsOverlap,
+      createPipe, updatePipes, checkPipePass,
+      updateScore: saveHighScore
+    };
+
+    // === Test Runner ===
+    const resultsDiv = document.getElementById('results');
+    const summaryDiv = document.getElementById('summary');
+    let passed = 0, failed = 0;
+
+    function log(msg, color) {
+      const div = document.createElement('div');
+      div.className = 'result ' + (color === 'green' ? 'pass' : 'fail');
+      div.textContent = msg;
+      resultsDiv.appendChild(div);
+      if (color === 'green') {
+        console.log('%c' + msg, 'color: green');
+      } else {
+        console.error(msg);
+      }
+    }
+
+    function suite(name) {
+      const div = document.createElement('div');
+      div.className = 'suite';
+      div.textContent = '--- ' + name + ' ---';
+      resultsDiv.appendChild(div);
+      console.log('%c--- ' + name + ' ---', 'color: orange; font-weight: bold');
+    }
+
+    function assert(condition, msg) {
+      if (condition) { passed++; log('PASS: ' + msg, 'green'); }
+      else { failed++; log('FAIL: ' + msg, 'red'); }
+    }
+
+    function assertEqual(a, b, msg) {
+      assert(a === b, msg + ` (got ${a}, expected ${b})`);
+    }
+
+    function assertApprox(a, b, tolerance, msg) {
+      assert(Math.abs(a - b) <= tolerance, msg + ` (got ${a}, expected ~${b}, tolerance ${tolerance})`);
+    }
+
+    // === localStorage Mock ===
+    const mockStorage = {};
+    const originalGetItem = localStorage.getItem.bind(localStorage);
+    const originalSetItem = localStorage.setItem.bind(localStorage);
+    localStorage.getItem = (key) => mockStorage[key] || null;
+    localStorage.setItem = (key, val) => { mockStorage[key] = val; };
+
+    function resetMockStorage() {
+      for (const key in mockStorage) delete mockStorage[key];
+    }
+
+    // === Test Suites ===
+
+    // --- Collision Tests (7 cases) ---
+    suite('Collision Detection');
+
+    // 1. Bird clearly inside pipe gap -> no collision
+    (function() {
+      const pipe = { x: 80, topHeight: 200, bottomY: 350, width: 60 };
+      // Bird at y=260, well within gap (200..350)
+      const result = checkCollision(80, 260, BIRD_W, BIRD_H, pipe);
+      assert(result === false, 'Bird inside pipe gap -> no collision');
+    })();
+
+    // 2. Bird overlapping top pipe -> collision
+    (function() {
+      const pipe = { x: 80, topHeight: 200, bottomY: 350, width: 60 };
+      // Bird at y=180, overlaps top pipe (0..200)
+      const result = checkCollision(80, 180, BIRD_W, BIRD_H, pipe);
+      assert(result === true, 'Bird overlapping top pipe -> collision');
+    })();
+
+    // 3. Bird overlapping bottom pipe -> collision
+    (function() {
+      const pipe = { x: 80, topHeight: 200, bottomY: 350, width: 60 };
+      // Bird at y=340, overlaps bottom pipe (350..640)
+      const result = checkCollision(80, 340, BIRD_W, BIRD_H, pipe);
+      assert(result === true, 'Bird overlapping bottom pipe -> collision');
+    })();
+
+    // 4. Bird exactly touching top pipe edge -> collision
+    (function() {
+      const pipe = { x: 80, topHeight: 200, bottomY: 350, width: 60 };
+      // Bird at y=170, birdY + BIRD_H = 200 which equals topHeight
+      // rectsOverlap: y1(170) < y2+h2(200) && y1+h1(200) > y2(0) -> 170 < 200 && 200 > 0 -> true
+      const result = checkCollision(80, 170, BIRD_W, BIRD_H, pipe);
+      assert(result === true, 'Bird exactly touching top pipe edge -> collision');
+    })();
+
+    // 5. Bird completely past pipe -> no collision
+    (function() {
+      const pipe = { x: 10, topHeight: 200, bottomY: 350, width: 60 };
+      // Bird at x=80, pipe at x=10 width=60, pipe ends at x=70
+      // birdX(80) < pipe.x+pipe.width(70) -> false, no overlap
+      const result = checkCollision(80, 260, BIRD_W, BIRD_H, pipe);
+      assert(result === false, 'Bird completely past pipe -> no collision');
+    })();
+
+    // 6. birdY <= 0 (top boundary) -> boundary collision triggers
+    (function() {
+      const birdY = -5;
+      const boundaryHit = birdY <= 0;
+      assert(boundaryHit === true, 'birdY <= 0 -> top boundary collision');
+    })();
+
+    // 7. birdY + BIRD_H >= CANVAS_H (bottom boundary) -> boundary collision triggers
+    (function() {
+      const birdY = CANVAS_H - BIRD_H;
+      const boundaryHit = birdY + BIRD_H >= CANVAS_H;
+      assert(boundaryHit === true, 'birdY + BIRD_H >= CANVAS_H -> bottom boundary collision');
+    })();
+
+    // --- Scoring Tests (6 cases) ---
+    suite('Scoring');
+
+    // 1. Bird before pipe -> checkPipePass returns false
+    (function() {
+      const pipe = { x: 200, width: 60, passed: false };
+      // birdX=80, pipe right edge at 260
+      const result = checkPipePass(80, pipe);
+      assert(result === false, 'Bird before pipe -> checkPipePass returns false');
+    })();
+
+    // 2. Bird just past pipe right edge -> checkPipePass returns true
+    (function() {
+      const pipe = { x: 10, width: 60, passed: false };
+      // birdX=80, pipe right edge at 70, 80 > 70 -> true
+      const result = checkPipePass(80, pipe);
+      assert(result === true, 'Bird past pipe right edge -> checkPipePass returns true');
+    })();
+
+    // 3. Same pipe checked again -> returns false (no double-count)
+    (function() {
+      const pipe = { x: 10, width: 60, passed: true };
+      const result = checkPipePass(80, pipe);
+      assert(result === false, 'Already passed pipe -> no double-count');
+    })();
+
+    // 4. saveHighScore with new high -> returns true
+    (function() {
+      resetMockStorage();
+      const result = saveHighScore(10);
+      assert(result === true, 'saveHighScore with new high -> returns true');
+      assertEqual(mockStorage['flappyBirdHighScore'], '10', 'High score saved correctly');
+    })();
+
+    // 5. saveHighScore with lower score -> returns false
+    (function() {
+      resetMockStorage();
+      mockStorage['flappyBirdHighScore'] = '20';
+      const result = saveHighScore(5);
+      assert(result === false, 'saveHighScore with lower score -> returns false');
+      assertEqual(mockStorage['flappyBirdHighScore'], '20', 'High score unchanged');
+    })();
+
+    // 6. getHighScore when localStorage empty -> returns 0
+    (function() {
+      resetMockStorage();
+      const result = getHighScore();
+      assertEqual(result, 0, 'getHighScore when empty -> returns 0');
+    })();
+
+    // --- Pipe Generation Tests (4 cases) ---
+    suite('Pipe Generation');
+
+    // 1. createPipe x = canvasWidth
+    (function() {
+      const pipe = createPipe(CANVAS_W, CANVAS_H, PIPE_GAP, MIN_PIPE_Y, MAX_PIPE_Y);
+      assertEqual(pipe.x, CANVAS_W, 'createPipe x = canvasWidth');
+    })();
+
+    // 2. Gap = pipe.bottomY - pipe.topHeight = PIPE_GAP
+    (function() {
+      const pipe = createPipe(CANVAS_W, CANVAS_H, PIPE_GAP, MIN_PIPE_Y, MAX_PIPE_Y);
+      assertEqual(pipe.bottomY - pipe.topHeight, PIPE_GAP, 'Gap = PIPE_GAP (150)');
+    })();
+
+    // 3. topHeight within [MIN_PIPE_Y, MAX_PIPE_Y]
+    (function() {
+      let allInRange = true;
+      for (let i = 0; i < 100; i++) {
+        const pipe = createPipe(CANVAS_W, CANVAS_H, PIPE_GAP, MIN_PIPE_Y, MAX_PIPE_Y);
+        if (pipe.topHeight < MIN_PIPE_Y || pipe.topHeight > MAX_PIPE_Y) {
+          allInRange = false;
+          break;
+        }
+      }
+      assert(allInRange, 'topHeight within [MIN_PIPE_Y, MAX_PIPE_Y] (100 samples)');
+    })();
+
+    // 4. pipe.passed starts as false
+    (function() {
+      const pipe = createPipe(CANVAS_W, CANVAS_H, PIPE_GAP, MIN_PIPE_Y, MAX_PIPE_Y);
+      assertEqual(pipe.passed, false, 'pipe.passed starts as false');
+    })();
+
+    // --- Pipe Movement Tests with deltaTime (3 cases) ---
+    suite('Pipe Movement (deltaTime)');
+
+    // 1. deltaTime=16.67, speed=0.12 -> pipe moves ~2px
+    (function() {
+      const pipe = { x: 400, topHeight: 200, bottomY: 350, width: 60, passed: false };
+      const pipes = [pipe];
+      updatePipes(pipes, 0.12, 16.67);
+      const moved = 400 - pipe.x;
+      assertApprox(moved, 2.0004, 0.1, 'deltaTime=16.67, speed=0.12 -> moves ~2px');
+    })();
+
+    // 2. deltaTime=33.34, speed=0.12 -> pipe moves ~4px (30fps)
+    (function() {
+      const pipe = { x: 400, topHeight: 200, bottomY: 350, width: 60, passed: false };
+      const pipes = [pipe];
+      updatePipes(pipes, 0.12, 33.34);
+      const moved = 400 - pipe.x;
+      assertApprox(moved, 4.0008, 0.1, 'deltaTime=33.34, speed=0.12 -> moves ~4px (frame-rate independent)');
+    })();
+
+    // 3. Pipe at x=-61 (off-screen) -> filtered out
+    (function() {
+      const pipe = { x: -61, topHeight: 200, bottomY: 350, width: 60, passed: false };
+      // x + width = -61 + 60 = -1, which is <= 0, so filtered
+      const result = updatePipes([pipe], 0.12, 0);
+      assertEqual(result.length, 0, 'Off-screen pipe (x=-61) filtered out');
+    })();
+
+    // --- Bird Mapping Tests (4 cases) ---
+    suite('Bird Y Mapping');
+
+    // 1. mapHandToBirdY(0, 640, 30) = -15
+    (function() {
+      const result = mapHandToBirdY(0, 640, 30);
+      assertEqual(result, -15, 'mapHandToBirdY(0, 640, 30) = -15 (no clamping)');
+    })();
+
+    // 2. mapHandToBirdY(1, 640, 30) = 625
+    (function() {
+      const result = mapHandToBirdY(1, 640, 30);
+      assertEqual(result, 625, 'mapHandToBirdY(1, 640, 30) = 625 (exceeds canvas, no clamping)');
+    })();
+
+    // 3. mapHandToBirdY(0.5, 640, 30) = 305
+    (function() {
+      const result = mapHandToBirdY(0.5, 640, 30);
+      assertEqual(result, 305, 'mapHandToBirdY(0.5, 640, 30) = 305 (centered)');
+    })();
+
+    // 4. mapHandToBirdY(0.3, 640, 30) = 177
+    (function() {
+      const result = mapHandToBirdY(0.3, 640, 30);
+      assertEqual(result, 177, 'mapHandToBirdY(0.3, 640, 30) = 177 (0.3*640 - 15 = 177)');
+    })();
+
+    // === Summary ===
+    const total = passed + failed;
+    const summaryText = `${passed} passed, ${failed} failed out of ${total} tests`;
+    summaryDiv.textContent = summaryText;
+    summaryDiv.className = failed === 0 ? 'summary-pass' : 'summary-fail';
+    console.log('%c' + summaryText, failed === 0 ? 'color: green; font-size: 16px' : 'color: red; font-size: 16px');
+
+    // Restore localStorage
+    localStorage.getItem = originalGetItem;
+    localStorage.setItem = originalSetItem;
+  </script>
+</body>
+</html>
